@@ -1,0 +1,25 @@
+[package]
+edition = "2021"
+name = "sanctumterra_raknet"
+version = "0.0.0"
+
+[lib]
+name = "sanctumterra_raknet"
+crate-type = ["cdylib"]
+
+[[bin]]
+name = "sanctumterra_raknet_bin"
+path = "src/main.rs"
+
+[dependencies]
+chrono = "0.4.38"
+napi = { version = "2.12.2", default-features = false, features = ["napi4"] }
+napi-derive = "2.12.2"
+rand = "0.8.5"
+
+[build-dependencies]
+napi-build = "2.0.1"
+
+[profile.release]
+lto = true
+strip = "symbols"
