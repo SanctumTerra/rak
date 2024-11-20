@@ -1,6 +1,6 @@
 {
   "name": "@sanctumterra/rs-rak-client-darwin-x64",
-  "version": "1.0.3",
+  "version": "1.0.4-0",
   "os": [
     "darwin"
   ],
@@ -19,4 +19,4 @@
     "type": "git",
     "url": "https://github.com/SanctumTerra/rak"
   }
-} 
+}

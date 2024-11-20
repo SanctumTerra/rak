@@ -1,6 +1,6 @@
 {
   "name": "@sanctumterra/rs-rak-client-win32-x64-msvc",
-  "version": "1.0.3",
+  "version": "1.0.4-0",
   "os": [
     "win32"
   ],
