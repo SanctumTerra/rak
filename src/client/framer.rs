@@ -24,6 +24,7 @@ pub struct Framer {
     socket: Socket,
     address: String,
     port: u16,
+    debug: bool,
     last_input_sequence: i32,
     received_frame_sequences: HashSet<u32>,
     lost_frame_sequences: HashSet<u32>,
@@ -43,7 +44,7 @@ pub struct Framer {
 }
 
 impl Framer {
-    pub fn new(socket: Socket, mtu_size: u16, address: String, port: u16) -> Self {
+    pub fn new(socket: Socket, mtu_size: u16, address: String, port: u16, debug: bool) -> Self {
         Self {
             mtu_size,
             socket,
@@ -68,6 +69,7 @@ impl Framer {
             output_backup: HashMap::new(),
             output_sequence: 0,
             received_packets: Vec::new(),
+            debug,
         }
     }
 
@@ -240,7 +242,10 @@ impl Framer {
     }
 
     fn on_split_frame(&mut self, frame: &Frame) -> Result<(), FramerError> {
-        // println!("Received split frame with sequence: {}", frame.payload[0]);
+        if self.debug {
+            println!("Received split frame with sequence: {}", frame.payload[0]);
+        }
+
         let split_id = frame.split_id.unwrap_or(0).into();
         
         if !self.fragments_queue.contains_key(&split_id) {

@@ -18,8 +18,8 @@ pub struct RaknetClient {
 #[napi]
 impl RaknetClient {
     #[napi(constructor)]
-    pub fn constructor(ip: Option<String>, port: Option<u16>, mtu_size: Option<u16>) -> Self {
-        Self { client: Client::new(ip, port, mtu_size).unwrap() }
+    pub fn constructor(ip: Option<String>, port: Option<u16>, mtu_size: Option<u16>, debug: Option<bool>) -> Self {
+        Self { client: Client::new(ip, port, mtu_size, debug).unwrap() }
     }
 
     #[napi]

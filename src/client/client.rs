@@ -17,20 +17,21 @@ pub struct Client {
     framer: Framer,
     port: u16,
     guid: i64,
-    step: u32
+    step: u32,
+    debug: bool,
 }
 
 impl Client {
-    pub fn new(address: Option<String>, port: Option<u16>, mtu_size: Option<u16>) -> Result<Self, SocketError> {
+    pub fn new(address: Option<String>, port: Option<u16>, mtu_size: Option<u16>, debug: Option<bool>) -> Result<Self, SocketError> {
         let socket = Socket::new(None, None)?;
         let address = address.unwrap_or("127.0.0.1".to_string());
         let port = port.unwrap_or(socket.get_local_port());
         let guid = rand::thread_rng().gen_range(0..i64::MAX);
         let mtu_size = mtu_size.unwrap_or(1492);
+        let debug = debug.unwrap_or(false);
         
-        let framer = Framer::new(socket.clone(), mtu_size, address.clone(), port);
-        
-        Ok(Self { socket, address, port, guid, step: 0, mtu_size, framer })
+        let framer = Framer::new(socket.clone(), mtu_size, address.clone(), port, debug);
+        Ok(Self { socket, address, port, guid, step: 0, mtu_size, framer, debug })
     }
 
     pub fn send(&self, buffer: &[u8]) -> Result<usize, SocketError> {
@@ -121,7 +122,7 @@ impl Client {
         Ok(())
     }
 
-    fn handle_packet(&mut self, buffer: &[u8]) -> Result<(), SocketError> {
+    pub fn handle_packet(&mut self, buffer: &[u8]) -> Result<(), SocketError> {
         if buffer.is_empty() {
             return Ok(());
         }
