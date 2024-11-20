@@ -145,6 +145,9 @@ impl Framer {
     pub fn process_packet(&mut self, frame: &Frame) -> Result<(), FramerError> {
         let id = frame.payload[0];
         self.received_packets.push(frame.payload.clone());
+        if self.debug {
+            println!("Received packet: {:?}", id);
+        }
 
         match id {
             0x00 => {
@@ -242,25 +245,33 @@ impl Framer {
     }
 
     fn on_split_frame(&mut self, frame: &Frame) -> Result<(), FramerError> {
-        if self.debug {
-            println!("Received split frame with sequence: {}", frame.payload[0]);
-        }
-
-        let split_id = frame.split_id.unwrap_or(0).into();
+        let split_id = frame.split_id.unwrap_or(0) as u32;
         
-        if !self.fragments_queue.contains_key(&split_id) {
-            self.fragments_queue.insert(split_id, HashMap::new());
-            return Ok(());
-        }
-
-        let fragment = self.fragments_queue.get_mut(&split_id).unwrap();
+        // Get or create the fragments map for this split_id
+        let fragment = self.fragments_queue
+            .entry(split_id)
+            .or_default();
+        
+        // Add the fragment
         fragment.insert(frame.split_frame_index.unwrap_or(0), frame.clone());
         
-        if frame.split_frame_index.unwrap_or(0) == frame.split_size.unwrap_or(0) {
+        // Check if we have all fragments before processing
+        let split_size = frame.split_size.unwrap_or(0);
+        if fragment.len() as u32 == split_size {
             let mut stream = BinaryStream::new(None, None);
-            for (_, frame) in fragment.iter() {
-                stream.write_bytes(frame.payload.clone());
+            
+            // Important: Iterate through fragments in order
+            for index in 0..split_size {
+                if let Some(fragment_frame) = fragment.get(&index) {
+                    stream.write_bytes(fragment_frame.payload.clone());
+                } else {
+                    // Missing fragment, can't reassemble
+                    return Ok(());
+                }
             }
+
+            // Remove the fragments queue entry since we're done with it
+            self.fragments_queue.remove(&split_id);
 
             let reassembled_frame = Frame {
                 reliability: frame.reliability.clone(),
@@ -270,9 +281,10 @@ impl Framer {
                 order_channel: frame.order_channel,
                 split_frame_index: None,
                 split_size: None,
-                split_id: frame.split_id,
+                split_id: None,
                 payload: stream.binary,
             };
+            
             self.on_frame(&reassembled_frame)?;
         }
         Ok(())
@@ -316,12 +328,14 @@ impl Framer {
     }
 
     fn handle_large_payload(&mut self, frame: &Frame, max_size: u16) -> Result<(), FramerError> {
-        let split_size = (frame.payload.len() as f32 / max_size as f32).ceil() as u32;
-        let split_id = (self.output_split_index + 1) % 65_536;
+        let payload_len = frame.payload.len();
+        let split_size = ((payload_len as f32) / (max_size as f32)).ceil() as u32;
+        let split_id = self.output_split_index;
+        self.output_split_index = (self.output_split_index + 1) % 65_536;
         
         for split_index in 0..split_size {
-            let start = (split_index as usize * max_size as usize).min(frame.payload.len());
-            let end = ((split_index + 1) as usize * max_size as usize).min(frame.payload.len());
+            let start = (split_index as usize * max_size as usize).min(payload_len);
+            let end = ((split_index + 1) as usize * max_size as usize).min(payload_len);
             
             let split_frame = Frame {
                 reliability: frame.reliability.clone(),
@@ -335,7 +349,10 @@ impl Framer {
                 payload: frame.payload[start..end].to_vec(),
             };
             
+            if split_frame.reliability.is_reliable() {
             self.output_reliable_index += 1;
+            }
+
             self.queue_frame(&split_frame, Priority::Immediate)?;
         }
         Ok(())
