@@ -250,34 +250,52 @@ impl Framer {
     fn on_split_frame(&mut self, frame: &Frame) -> Result<(), FramerError> {
         let split_id = frame.split_id.unwrap_or(0) as u32;
         
-        let fragment = self.fragments_queue
+        let fragments = self.fragments_queue
             .entry(split_id)
             .or_default();
         
-        fragment.insert(frame.split_frame_index.unwrap_or(0), frame.clone());
+        let split_index = frame.split_frame_index.unwrap_or(0);
+        fragments.insert(split_index, frame.clone());
         
         let split_size = frame.split_size.unwrap_or(0);
-        if fragment.len() as u32 == split_size {
-            let total_size = fragment.values()
+        
+        if self.debug {
+            println!("Received split frame {}/{} for id={}, size={}", 
+                split_index + 1, split_size, split_id, frame.payload.len());
+        }
+        
+        if fragments.len() as u32 == split_size {
+            let total_size = fragments.values()
                 .map(|f| f.payload.len())
                 .sum();
+            
+            if self.debug {
+                println!("Reassembling split packet: total_size={}", total_size);
+            }
             
             let mut combined_payload = Vec::with_capacity(total_size);
             
             for index in 0..split_size {
-                if let Some(fragment_frame) = fragment.get(&index) {
-                    combined_payload.extend_from_slice(&fragment_frame.payload);
+                if let Some(fragment) = fragments.get(&index) {
+                    combined_payload.extend_from_slice(&fragment.payload);
                 } else {
+                    if self.debug {
+                        println!("Missing fragment {} when reassembling split packet {}", index, split_id);
+                    }
                     return Ok(());
                 }
             }
 
             self.fragments_queue.remove(&split_id);
 
+            if self.debug {
+                println!("Successfully reassembled split packet: size={}", combined_payload.len());
+            }
+
             let reassembled_frame = Frame {
-                reliability: frame.reliability.clone(),
+                reliability: Reliability::ReliableOrdered,
                 reliable_frame_index: frame.reliable_frame_index,
-                sequence_frame_index: frame.sequence_frame_index,
+                sequence_frame_index: None,
                 ordered_frame_index: frame.ordered_frame_index,
                 order_channel: frame.order_channel,
                 split_frame_index: None,
@@ -330,49 +348,58 @@ impl Framer {
 
     fn handle_large_payload(&mut self, frame: &Frame, max_size: u16) -> Result<(), FramerError> {
         let payload_len = frame.payload.len();
-        let effective_max_size = max_size as usize - 28;
+        let effective_max_size = max_size as usize - 60;
         let split_size = ((payload_len as f32) / (effective_max_size as f32)).ceil() as u32;
         let split_id = self.output_split_index;
         self.output_split_index = (self.output_split_index + 1) % 65_536;
+        
+        if self.debug {
+            println!("Splitting packet: size={}, chunks={}, effective_chunk_size={}", 
+                payload_len, split_size, effective_max_size);
+        }
         
         for split_index in 0..split_size {
             let start = split_index as usize * effective_max_size;
             let end = (start + effective_max_size).min(payload_len);
             
+            let chunk = frame.payload[start..end].to_vec();
+            
+            if self.debug {
+                println!("Chunk {}/{}: size={}", split_index + 1, split_size, chunk.len());
+            }
+            
             let split_frame = Frame {
-                reliability: frame.reliability.clone(),
+                reliability: Reliability::ReliableOrdered,
                 reliable_frame_index: Some(self.output_reliable_index),
-                sequence_frame_index: frame.sequence_frame_index,
+                sequence_frame_index: None,
                 ordered_frame_index: frame.ordered_frame_index,
                 order_channel: frame.order_channel,
                 split_frame_index: Some(split_index),
                 split_id: Some(split_id as u16),
                 split_size: Some(split_size),
-                payload: frame.payload[start..end].to_vec(),
+                payload: chunk,
             };
             
-            if split_frame.reliability.is_reliable() {
-                self.output_reliable_index += 1;
-            }
-
+            self.output_reliable_index += 1;
             self.queue_frame(&split_frame, Priority::Immediate)?;
         }
         Ok(())
     }
 
     pub fn queue_frame(&mut self, frame: &Frame, priority: Priority) -> Result<(), FramerError> {
-        let mut length = 4;
-        for qframe in self.output_frames.iter() {
-            length += qframe.payload.len();
-        }
-        if length + frame.payload.len() > self.mtu_size as usize {
+        let frame_size = frame.payload.len() + 28; 
+        
+        if self.output_frames.iter().map(|f| f.payload.len() + 28).sum::<usize>() + frame_size > self.mtu_size as usize {
             self.send_queue(self.output_frames.len() as u32)?;
             self.output_frames.clear();
         }
+        
         self.output_frames.insert(frame.clone());
+        
         if priority == Priority::Immediate {
             self.send_queue(1)?;
         }
+        
         Ok(())
     }
 
