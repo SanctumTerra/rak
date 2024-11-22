@@ -1,6 +1,6 @@
 {
   "name": "@sanctumterra/rs-rak-client-linux-x64-gnu",
-  "version": "1.0.61",
+  "version": "1.0.62",
   "os": [
     "linux"
   ],

@@ -144,6 +144,9 @@ impl Framer {
 
     pub fn process_packet(&mut self, frame: &Frame) -> Result<(), FramerError> {
         let id = frame.payload[0];
+        if self.debug {
+            println!("Received packet: ID={:02x}, Size={}", id, frame.payload.len());
+        }
         self.received_packets.push(frame.payload.clone());
         if self.debug {
             println!("Received packet: {:?}", id);
@@ -258,12 +261,18 @@ impl Framer {
         // Check if we have all fragments before processing
         let split_size = frame.split_size.unwrap_or(0);
         if fragment.len() as u32 == split_size {
-            let mut stream = BinaryStream::new(None, None);
+            // Calculate total payload size first
+            let total_size = fragment.values()
+                .map(|f| f.payload.len())
+                .sum();
+            
+            // Pre-allocate buffer with correct size
+            let mut combined_payload = Vec::with_capacity(total_size);
             
             // Important: Iterate through fragments in order
             for index in 0..split_size {
                 if let Some(fragment_frame) = fragment.get(&index) {
-                    stream.write_bytes(fragment_frame.payload.clone());
+                    combined_payload.extend_from_slice(&fragment_frame.payload);
                 } else {
                     // Missing fragment, can't reassemble
                     return Ok(());
@@ -282,7 +291,7 @@ impl Framer {
                 split_frame_index: None,
                 split_size: None,
                 split_id: None,
-                payload: stream.binary,
+                payload: combined_payload,
             };
             
             self.on_frame(&reassembled_frame)?;
@@ -329,13 +338,14 @@ impl Framer {
 
     fn handle_large_payload(&mut self, frame: &Frame, max_size: u16) -> Result<(), FramerError> {
         let payload_len = frame.payload.len();
-        let split_size = ((payload_len as f32) / (max_size as f32)).ceil() as u32;
+        let effective_max_size = max_size as usize - 28;
+        let split_size = ((payload_len as f32) / (effective_max_size as f32)).ceil() as u32;
         let split_id = self.output_split_index;
         self.output_split_index = (self.output_split_index + 1) % 65_536;
         
         for split_index in 0..split_size {
-            let start = (split_index as usize * max_size as usize).min(payload_len);
-            let end = ((split_index + 1) as usize * max_size as usize).min(payload_len);
+            let start = split_index as usize * effective_max_size;
+            let end = (start + effective_max_size).min(payload_len);
             
             let split_frame = Frame {
                 reliability: frame.reliability.clone(),
@@ -350,7 +360,7 @@ impl Framer {
             };
             
             if split_frame.reliability.is_reliable() {
-            self.output_reliable_index += 1;
+                self.output_reliable_index += 1;
             }
 
             self.queue_frame(&split_frame, Priority::Immediate)?;
