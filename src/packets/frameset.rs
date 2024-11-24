@@ -35,6 +35,7 @@ impl Packet for FrameSet {
         while !stream.cursor_at_end() {
             frames.push(Frame::read(&mut stream));
         }
+
         Ok(Self { sequence, frames })
     }
 }

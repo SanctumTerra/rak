@@ -15,15 +15,21 @@ impl Packet for Ack {
         let mut stream = BinaryStream::new(None, None);
         stream.write_u8(Self::ID as u8);
         let mut _stream = BinaryStream::new(None, None);
-        let count = self.sequences.len() as u16;
+        
+        let mut sequences = self.sequences.clone();
+        sequences.sort();
+        
+        let count = sequences.len() as u16;
         let mut records = 0;
 
         if count > 0 {
-            let mut cursor = 0;
-            let mut start = self.sequences[cursor];
-            let mut last = self.sequences[cursor];
-            while cursor < (count as usize - 1) {
-                let current = self.sequences[{cursor += 1; cursor}];
+            let mut pointer = 1;
+            let mut start = sequences[0];
+            let mut last = sequences[0];
+            
+            while pointer < count as usize {
+                let current = sequences[pointer];
+                pointer += 1;
                 let diff = current - last;
 
                 if diff == 1 {
@@ -43,7 +49,7 @@ impl Packet for Ack {
                 }
             }
 
-            if start == last { 
+            if start == last {
                 _stream.write_bool(true);
                 _stream.write_u24(start, Some(Endianness::Little));
             } else {
@@ -51,11 +57,14 @@ impl Packet for Ack {
                 _stream.write_u24(start, Some(Endianness::Little));
                 _stream.write_u24(last, Some(Endianness::Little));
             }
-
             records += 1;
+
             stream.write_u16(records, None);
             stream.write(_stream.binary);
+        } else {
+            stream.write_u16(0, None);
         }
+        
         Ok(stream.binary)
     }
 

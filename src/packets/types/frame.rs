@@ -24,6 +24,31 @@ impl Frame {
     pub fn is_split(&self) -> bool {
         self.split_size.is_some() && self.split_size.unwrap() > 0
     }
+
+    pub fn get_size(&self) -> usize {
+        let mut size = self.payload.len();
+        
+        // Add header size
+        size += 3; // Flags and reliability
+        
+        if self.reliability.is_reliable() {
+            size += 3; // reliable_frame_index
+        }
+        
+        if self.reliability.is_sequenced() {
+            size += 3; // sequence_frame_index
+        }
+        
+        if self.reliability.is_ordered() {
+            size += 4; // ordered_frame_index + order_channel
+        }
+        
+        if self.is_split() {
+            size += 10; // split_size + split_id + split_frame_index
+        }
+        
+        size
+    }
 }
 impl DataType for Frame {
     fn read(stream: &mut BinaryStream) -> Self {
@@ -40,7 +65,6 @@ impl DataType for Frame {
             (Some(stream.read_u32(None).unwrap()), Some(stream.read_u16(None).unwrap()), Some(stream.read_u32(None).unwrap()))
         } else { (None, None, None) };
         let payload = stream.read(length as u32).unwrap();
-
         Self {
             reliable_frame_index, sequence_frame_index, ordered_frame_index,
             order_channel, reliability, payload,

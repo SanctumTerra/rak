@@ -82,23 +82,17 @@ impl Client {
     }
 
     pub fn receive(&mut self) -> Result<Vec<u8>, SocketError> {
-        let mut buffer = vec![0; self.mtu_size as usize];
-        let (size, _) = self.socket.receive(&mut buffer)?;
+        let mut buffer = [0; 65535];
+        let (size, _) = self.socket.receive(&mut buffer).unwrap();
         
         if size > 0 {
             let _ = self.handle_packet(&buffer[..size]);
-        }
-        
-        let packets = self.framer.get_received_packets();
-        
-        if !packets.is_empty() {
-            if let Some(largest) = packets.iter()
-                .max_by_key(|p| p.len()) {
-                return Ok(largest.clone());
+            
+            if let Some(packet) = self.framer.get_next_packet() {
+                return Ok(packet);
             }
         }
-        
-        Ok(buffer[..size].to_vec())
+        Ok(Vec::new())
     }
 
     fn pls_frame(&mut self, buffer: &[u8]) -> Result<Frame, SocketError> {
@@ -136,24 +130,13 @@ impl Client {
         if buffer.is_empty() {
             return Ok(());
         }
-
-        if self.debug {
-            println!("Handling packet of size: {}", buffer.len());
+        let mut packet_type = PacketType::from(buffer[0]);
+        
+        if (packet_type.to_u8() & 0xf0) == 0x80 {
+            packet_type = PacketType::FrameSet;
         }
 
-        let packet_type = PacketType::from(buffer[0]);
-        
-        let is_frameset = (buffer[0] & 0xf0) == 0x80;
-        
         match packet_type {
-            PacketType::FrameSet | _ if is_frameset => {
-                if let Ok(frameset) = FrameSet::deserialize(buffer) {
-                    if self.debug {
-                        println!("Received FrameSet with {} frames", frameset.frames.len());
-                    }
-                    let _ = self.framer.on_frame_set(&frameset);
-                }
-            },
             PacketType::UnconnectedPong => {
                 self.framer.add_received_packet(buffer.to_vec());
             },
@@ -183,6 +166,9 @@ impl Client {
                     self.connect()?;
                 }
             },
+            PacketType::FrameSet => {
+                let _ = self.framer.on_frame_set(&FrameSet::deserialize(buffer).unwrap());
+            },
             PacketType::Ack => {
                 let frame = Frame {
                     reliability: Reliability::ReliableOrdered,
@@ -208,7 +194,7 @@ impl Client {
     }
 
     pub fn get_received_packets(&mut self) -> Result<Vec<Vec<u8>>, SocketError> {
-        let mut buffer = [0; 1500];
+        let mut buffer = [0; 65535];
         let (size, _) = self.socket.receive(&mut buffer)?;
         
         if size > 0 {
