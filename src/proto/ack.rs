@@ -1,19 +1,20 @@
-use crate::binarystream::{BinaryStream, Endianness};
-
-use super::{Packet, PacketError, MAGIC};
+use crate::{BinaryStream, Endianness};
 
 #[derive(Debug)]
 pub struct Ack {
-    pub sequences: Vec<u32>,
+    pub sequences: Vec<u32>
 }
 
-impl Packet for Ack {
-    const ID: u16 = 0xc0;
-    const MAGIC: [u8; 16] = MAGIC;
+impl Ack {
+    pub const ID: u8 = 0xc0;
 
-    fn serialize(&self) -> Result<Vec<u8>, PacketError> {
+    pub fn new(sequences: Vec<u32>) -> Self {
+        Self { sequences }
+    }
+
+    pub fn serialize(&self) -> Vec<u8> {
         let mut stream = BinaryStream::new(None, None);
-        stream.write_u8(Self::ID as u8);
+        stream.write_u8(Self::ID);
         let mut _stream = BinaryStream::new(None, None);
         
         let mut sequences = self.sequences.clone();
@@ -65,27 +66,27 @@ impl Packet for Ack {
             stream.write_u16(0, None);
         }
         
-        Ok(stream.binary)
+        stream.binary
     }
 
-    fn deserialize(buffer: &[u8]) -> Result<Self, PacketError> {
-        let mut stream = BinaryStream::from(buffer.to_vec(), None);
-        let _id = stream.read_u8().unwrap();
+    pub fn deserialize(buffer: &[u8]) -> Self {
+        let mut stream = BinaryStream::new(Some(buffer.to_vec()), None);
+        let _id = stream.read_u8();
         let mut sequences = Vec::new();
-        let records = stream.read_u16(None).unwrap();
+        let records = stream.read_u16(None);
         for _ in 0..records {
-            let range = stream.read_bool().unwrap();
+            let range = stream.read_bool();
             if range {
-                let r: u32 = stream.read_u24(Some(Endianness::Little)).unwrap();
+                let r = stream.read_u24(Some(Endianness::Little));
                 sequences.push(r);
             } else {
-                let r = stream.read_u24(Some(Endianness::Little)).unwrap();
-                let l = stream.read_u24(Some(Endianness::Little)).unwrap();
+                let r = stream.read_u24(Some(Endianness::Little));
+                let l = stream.read_u24(Some(Endianness::Little));
                 for i in r..=l {
                     sequences.push(i);
                 }
             }
         }
-        Ok(Self { sequences })
+        Self { sequences }
     }
 }

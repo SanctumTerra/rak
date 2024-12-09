@@ -1,68 +1,79 @@
-#![allow(dead_code)]
-#![allow(unused_imports)]
-
 pub mod client;
-pub mod binarystream;
+pub use client::*;
+pub mod proto;
+pub use proto::*;
 pub mod socket;
-pub mod packets;
+pub use socket::*;
+pub mod binary_stream;
+pub use binary_stream::*;
 
-use crate::client::Client;
 use napi_derive::*;
 use napi::bindgen_prelude::*;
 
+#[napi(object)]
+pub struct JsEvent {
+    pub name: String,
+    pub data: Vec<u8>
+}
+
 #[napi]
 pub struct RaknetClient {
-    client: Client,
+    client: Client
 }
 
 #[napi]
 impl RaknetClient {
     #[napi(constructor)]
-    pub fn constructor(ip: Option<String>, port: Option<u16>, mtu_size: Option<u16>, debug: Option<bool>) -> Self {
-        Self { client: Client::new(ip, port, mtu_size, debug).unwrap() }
+    pub fn new(host: String, port: u32) -> Self {
+        Self {
+            client: Client::new(host, port as u16)
+        }
     }
 
     #[napi]
     pub fn connect(&mut self) -> Result<()> {
-        self.client.connect()
-            .map_err(|e| Error::from_reason(format!("Connection error: {:?}", e)))
+        self.client.connect().map_err(|e| Error::from_reason(e))
+    }
+
+    #[napi]
+    pub fn receive(&mut self) -> Result<Vec<u8>> {
+        self.client.receive()
+            .map_err(|e| Error::from_reason(e))
+    }
+
+    #[napi]
+    pub fn frame_and_send(&mut self, data: Buffer) -> Result<()> {
+        self.client.frame_and_send(data.to_vec());
+        Ok(())
     }
 
     #[napi]
     pub fn tick(&mut self) -> Result<()> {
-        self.client.tick()
-            .map_err(|e| Error::from_reason(format!("Tick error: {:?}", e)))
+        self.client.tick();
+        Ok(())
     }
 
     #[napi]
     pub fn ping(&mut self) -> Result<()> {
-        self.client.ping()
-            .map_err(|e| Error::from_reason(format!("Ping error: {:?}", e)))
-    }
-
-    #[napi]
-    pub fn receive(&mut self) -> Result<Buffer> {
-        self.client.get_received_packets()
-            .map(|packets| {
-                packets.first()
-                    .cloned()
-                    .unwrap_or_default()
-            })
-            .map(Buffer::from)
-            .map_err(|e| Error::from_reason(format!("Receive error: {:?}", e)))
+        self.client.ping();
+        Ok(())
     }
     
-    #[napi] 
-    pub fn frame_and_send(&mut self, buffer: Buffer) -> Result<()> {
-        self.client.frame_and_send(&buffer)
-            .map(|_| ())
-            .map_err(|e| Error::from_reason(format!("Frame and send error: {:?}", e)))
-    }
-
     #[napi]
-    pub fn send(&mut self, buffer: Buffer) -> Result<()> {
-        self.client.send(&buffer)
-            .map(|_| ())
-            .map_err(|e| Error::from_reason(format!("Send error: {:?}", e)))
+    pub fn is_connected(&self) -> bool {
+        self.client.is_connected()
+    }
+    
+    #[napi(js_name = "onEvent")]
+    pub fn on_event(&mut self) -> Result<Option<JsEvent>> {
+        match self.client.event_receiver.try_recv() {
+            Ok(event) => {
+                Ok(Some(JsEvent {
+                    name: event.name,
+                    data: event.data,
+                }))
+            },
+            Err(_) => Ok(None)
+        }
     }
 }

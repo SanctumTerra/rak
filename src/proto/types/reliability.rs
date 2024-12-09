@@ -1,4 +1,4 @@
-#[derive(Debug, Clone, Hash, Eq, PartialEq)]
+#[derive(Debug, Clone, Hash, Eq, PartialEq, Copy)]
 pub enum Reliability {
     Unreliable = 0,
     UnreliableSequenced = 1,

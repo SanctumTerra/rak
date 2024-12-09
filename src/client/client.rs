@@ -1,206 +1,174 @@
-use chrono::Utc;
-use rand::Rng;
+#![allow(dead_code)]
 
-use crate::{
-    packets::{
-        open_connection_request_one::OpenConnectionRequestOne, packet::Packet, packet_types::PacketType, Ack, Address, ConnectionRequest, Frame, FrameSet, OpenConnectionReplyOne, OpenConnectionReplyTwo, OpenConnectionRequestTwo, Priority, Reliability, UnconnectedPing
-    },
-    socket::{Socket, SocketError},
+use chrono::Utc;
+use std::sync::Arc;
+use std::sync::mpsc::{channel, Sender, Receiver};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use crate::proto::{ 
+    Ack, Address, ConnectionReplyOne, ConnectionReplyTwo, ConnectionRequestOne, ConnectionRequestTwo, FrameSet, Nack, UnconnectedPing, UnconnectedPong
 };
+use crate::socket::Socket;
+use crate::Priority;
 
 use super::Framer;
 
+#[derive(Clone, Debug)]
+pub struct Event {
+    pub name: String,
+    pub data: Vec<u8>,
+}
+
 pub struct Client {
-    socket: Socket,
-    address: String,
+    pub socket: Arc<Socket>,
+    pub guid: i64,
     pub mtu_size: u16,
-    framer: Framer,
-    port: u16,
-    guid: i64,
-    step: u32,
-    debug: bool,
+    pub framer: Framer,
+    pub tick_count: u32,
+    pub event_sender: Sender<Event>,
+    pub event_receiver: Receiver<Event>,
+    pub connected: AtomicBool,
 }
 
 impl Client {
-    pub fn new(address: Option<String>, port: Option<u16>, mtu_size: Option<u16>, debug: Option<bool>) -> Result<Self, SocketError> {
-        let socket = Socket::new(None, None)?;
-        let address = address.unwrap_or("127.0.0.1".to_string());
-        let port = port.unwrap_or(socket.get_local_port());
-        let guid = rand::thread_rng().gen_range(0..i64::MAX);
-        let mtu_size = mtu_size.unwrap_or(1492);
-        let debug = debug.unwrap_or(false);
+    pub fn new(host: String, port: u16) -> Self {
+        let guid = 4124124124124;
+        let mtu_size = 1492;
+        let socket = Arc::new(Socket::new(host, port));
+        let (event_sender, event_receiver) = channel();
+        let framer = Framer::new(
+            Arc::clone(&socket), 
+            mtu_size, 
+            guid, 
+            event_sender.clone()
+        );
         
-        let framer = Framer::new(socket.clone(), mtu_size, address.clone(), port, debug);
-        Ok(Self { socket, address, port, guid, step: 0, mtu_size, framer, debug })
-    } 
-
-    pub fn send(&self, buffer: &[u8]) -> Result<usize, SocketError> {
-        self.socket.send(buffer, &format!("{}:{}", self.address, self.port))
+        Self { 
+            socket, 
+            guid, 
+            mtu_size, 
+            framer,
+            tick_count: 0,
+            event_sender,
+            event_receiver,
+            connected: AtomicBool::new(false),
+        }
     }
 
-    pub fn tick(&mut self) -> Result<(), SocketError> {
-        let _ = self.framer.tick();
-        Ok(())
-    }
-
-    pub fn ping(&self) -> Result<(), SocketError> {
+    pub fn connect(&mut self) -> Result<(), String> {
+        if self.tick_count > 0 { 
+            self.mtu_size = 1200;
+        }
         let timestamp = Utc::now().timestamp();
-        let packet = UnconnectedPing::new(timestamp, self.guid);
-        let serialized = packet.serialize().unwrap();
-        self.send(&serialized)?;
+        let ping = UnconnectedPing::new(timestamp, self.guid);
+        self.socket.send(ping.serialize()).unwrap();
+        let request = ConnectionRequestOne::new(11, self.mtu_size);
+        self.socket.send(request.serialize()).unwrap();
         Ok(())
     }
 
-    pub fn frame_and_send(&mut self, buffer: &[u8]) -> Result<(), SocketError> {
-        let mut frame = self.pls_frame(buffer)?;
-        self.framer.send_frame(&mut frame, Priority::Immediate).unwrap();
+    pub fn ping(&mut self) {
+        let timestamp = Utc::now().timestamp();
+        let ping = UnconnectedPing::new(timestamp, self.guid);
+        self.socket.send(ping.serialize()).unwrap();
+    }
+
+    pub fn receive(&mut self) -> Result<Vec<u8>, String> {
+        let mut buffer = [0; 1492];
+        match self.socket.receive(&mut buffer) {
+            Ok(0) => Ok(vec![]),
+            Ok(size) => {
+                self.handle_packet(&buffer[..size]);
+                Ok(buffer[..size].to_vec())
+            }
+            Err(e) => Err(e.to_string())
+        }
+    }
+
+    pub fn tick(&mut self) {
+        let _ = self.receive();
+        self.framer.tick();
+    }
+
+    pub fn send(&mut self, data: Vec<u8>) -> Result<(), String> {
+        self.socket.send(data).unwrap();
         Ok(())
     }
 
-    pub fn get_timestamp(&self) -> i64 {
-        Utc::now().timestamp()
-    }
-
-    pub fn connect(&mut self) -> Result<(), SocketError> {
-        let mut mtu_size = self.mtu_size;
-        if self.step == 1 {
-            mtu_size = 1200;
-        }
-        if self.step == 2 {
-            mtu_size = 576;
-        }
-
-        let packet = OpenConnectionRequestOne {
-            protocol_version: 11,
-            mtu_size: mtu_size as usize,
+    pub fn emit_event(&self, name: &str, data: Vec<u8>) {
+        let event = Event {
+            name: name.to_string(),
+            data,
         };
-
-
-        let serialized = packet.serialize().unwrap();
-        self.send(&serialized)?;
-        Ok(())
+        self.event_sender.send(event).unwrap();
     }
 
-    pub fn receive(&mut self) -> Result<Vec<u8>, SocketError> {
-        let mut buffer = [0; 65535];
-        let (size, _) = self.socket.receive(&mut buffer).unwrap();
-        
-        if size > 0 {
-            let _ = self.handle_packet(&buffer[..size]);
-            
-            if let Some(packet) = self.framer.get_next_packet() {
-                return Ok(packet);
+    pub fn frame_and_send(&mut self, data: Vec<u8>) {
+        let mut frame = self.framer.pls_frame(data);
+        self.framer.send_frame(&mut frame, Some(Priority::Immediate));
+    }
+
+    pub fn handle_packet(&mut self, binary: &[u8]) {
+        let mut packet_id = binary[0];
+        if (packet_id & 0xf0) == 0x80 {
+            packet_id = FrameSet::ID;
+        }
+
+        match packet_id {
+            UnconnectedPong::ID => {
+                // let packet = UnconnectedPong::deserialize(binary.to_vec()).unwrap();
+                self.emit_event("unconnected_pong", binary.to_vec());
+            }
+            ConnectionReplyOne::ID => {
+                let packet = ConnectionReplyOne::deserialize(binary.to_vec()).unwrap();
+                self.emit_event("connection_reply_one", binary.to_vec());
+                let request = ConnectionRequestTwo::new(
+                    Address::new(4, self.socket.server_address.clone(), self.socket.server_port), 
+                    packet.mtu_size, 
+                    self.guid
+                );
+                self.send(request.serialize()).unwrap();
+                if packet.mtu_size > 1500 || packet.mtu_size < 400 {
+                    self.connect().unwrap();
+                } 
+            }
+            ConnectionReplyTwo::ID => {
+                let _packet = ConnectionReplyTwo::deserialize(binary.to_vec()).unwrap();
+                self.emit_event("connection_reply_two", binary.to_vec());
+                self.connected.store(true, Ordering::SeqCst);
+                self.framer.send_connect();
+            }
+            FrameSet::ID => {
+                let packet = FrameSet::deserialize(&binary).unwrap();
+                self.framer.on_frameset(&packet);
+                self.emit_event("frame_set", binary.to_vec());
+            }
+            Ack::ID => {
+                self.emit_event("ack", binary.to_vec());
+                let frame = self.framer.pls_frame(binary.to_vec());
+                self.framer.handle_packet(&frame);
+            }
+            Nack::ID => {
+                self.emit_event("nack", binary.to_vec());
+                let frame = self.framer.pls_frame(binary.to_vec());
+                self.framer.handle_packet(&frame);
+            }
+            21 => {
+                self.connected.store(false, Ordering::SeqCst);
+                self.emit_event("disconnect", binary.to_vec());
+            }
+            _ => {
+                println!("Received unknown packet: {}", packet_id);
+                self.emit_event("unknown_packet", vec![packet_id]);
             }
         }
-        Ok(Vec::new())
     }
 
-    fn pls_frame(&mut self, buffer: &[u8]) -> Result<Frame, SocketError> {
-        let frame = Frame {
-            reliability: Reliability::ReliableOrdered,
-            reliable_frame_index: Some(1),
-            sequence_frame_index: None,
-            ordered_frame_index: Some(0),
-            order_channel: Some(0),
-            split_frame_index: None,
-            split_size: None,
-            split_id: None,
-            payload: buffer.to_vec()
-        };
-        Ok(frame)
+    pub fn is_connected(&self) -> bool {
+        self.connected.load(Ordering::SeqCst)
     }
+}
 
-    fn send_frame(&mut self, buffer: &[u8]) -> Result<(), SocketError> {
-        let mut frame = Frame {
-            reliability: Reliability::ReliableOrdered,
-            reliable_frame_index: Some(1),
-            sequence_frame_index: None,
-            ordered_frame_index: Some(0),
-            order_channel: Some(0),
-            split_frame_index: None,
-            split_size: None,
-            split_id: None,
-            payload: buffer.to_vec()
-        };
-        self.framer.send_frame(&mut frame, Priority::Immediate).unwrap();
-        Ok(())
-    }
-
-    pub fn handle_packet(&mut self, buffer: &[u8]) -> Result<(), SocketError> {
-        if buffer.is_empty() {
-            return Ok(());
-        }
-        let mut packet_type = PacketType::from(buffer[0]);
-        
-        if (packet_type.to_u8() & 0xf0) == 0x80 {
-            packet_type = PacketType::FrameSet;
-        }
-
-        match packet_type {
-            PacketType::UnconnectedPong => {
-                self.framer.add_received_packet(buffer.to_vec());
-            },
-            PacketType::OpenConnectionReplyOne => {
-                let packet = OpenConnectionReplyOne::deserialize(buffer).unwrap();
-                let request_two = OpenConnectionRequestTwo {
-                    address: Address::new(self.address.clone(), self.port, 4),
-                    mtu_size: packet.mtu_size,
-                    guid: self.guid
-                };
-                let serialized = request_two.serialize().unwrap();
-                self.send(&serialized)?;
-                if packet.mtu_size > 1500 {
-                    self.connect()?;
-                }
-            },
-            PacketType::OpenConnectionReplyTwo => {
-                let packet = OpenConnectionReplyTwo::deserialize(buffer).unwrap();
-                let conn_request = ConnectionRequest {
-                    guid: self.guid,
-                    timestamp: Utc::now().timestamp(),
-                    security: false,
-                };
-                let serialized = conn_request.serialize().unwrap();
-                self.send_frame(&serialized)?;
-                if packet.mtu_size > 1500 {
-                    self.connect()?;
-                }
-            },
-            PacketType::FrameSet => {
-                let _ = self.framer.on_frame_set(&FrameSet::deserialize(buffer).unwrap());
-            },
-            PacketType::Ack => {
-                let frame = Frame {
-                    reliability: Reliability::ReliableOrdered,
-                    reliable_frame_index: Some(1),
-                    sequence_frame_index: None,
-                    ordered_frame_index: Some(0),
-                    order_channel: Some(0),
-                    split_frame_index: None,
-                    split_size: None,
-                    split_id: None,
-                    payload: buffer.to_vec()
-                };
-                self.framer.process_packet(&frame).unwrap();
-            },
-            PacketType::Nack => {
-                let frame = self.pls_frame(buffer)?;
-                self.framer.process_packet(&frame).unwrap();
-            },
-            _ => {}
-        }
-
-        Ok(())
-    }
-
-    pub fn get_received_packets(&mut self) -> Result<Vec<Vec<u8>>, SocketError> {
-        let mut buffer = [0; 65535];
-        let (size, _) = self.socket.receive(&mut buffer)?;
-        
-        if size > 0 {
-            let _ = self.handle_packet(&buffer[..size]);
-        }
-
-        Ok(self.framer.get_received_packets())
-    }
+fn dump_packet(prefix: &str, data: &[u8]) {
+    println!("{} packet [{} bytes]: {:02X?}", prefix, data.len(), data);
 }

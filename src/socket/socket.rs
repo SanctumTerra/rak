@@ -1,60 +1,39 @@
 use std::net::{SocketAddr, UdpSocket};
 
+#[derive(Debug)]
 pub struct Socket {
-    pub bind_address: SocketAddr,
     pub socket: UdpSocket,
+    pub server_address: String,
+    pub server_port: u16,
 }
 
-impl Clone for Socket {
-    fn clone(&self) -> Self {
-        Self {
-            bind_address: self.bind_address,
-            socket: self.socket.try_clone().expect("Failed to clone socket"),
+impl Socket { 
+    pub fn new(server_address: String, server_port: u16) -> Self {
+        let socket = UdpSocket::bind("0.0.0.0:0").unwrap();
+        socket.connect(format!("{}:{}", server_address, server_port)).unwrap();
+        
+        Self { 
+            socket,
+            server_address,
+            server_port,
         }
     }
-}
 
-#[derive(Debug)]
-pub enum SocketError {
-    BindError(#[allow(dead_code)] std::io::Error),
-    SendError(#[allow(dead_code)] std::io::Error),
-    ReceiveError(#[allow(dead_code)] std::io::Error),
-    AddressParseError(#[allow(dead_code)] std::io::Error),
-}
-
-impl Socket {
-    pub fn new(bind_address: Option<String>, port: Option<u16>) -> Result<Self, SocketError> {
-        let bind_addr = match (bind_address, port) {
-            (Some(addr), Some(p)) => format!("{}:{}", addr, p),
-            (Some(addr), None) => addr,
-            (None, Some(p)) => format!("0.0.0.0:{}", p),
-            (None, None) => "0.0.0.0:0".to_string(),
-        };
-
-        let socket = UdpSocket::bind(bind_addr).map_err(SocketError::BindError)?;
-        let bind_address = socket.local_addr().map_err(SocketError::BindError)?;
-        
-        Ok(Self { 
-            bind_address,
-            socket 
-        })
+    pub fn send(&self, data: Vec<u8>) -> Result<usize, std::io::Error> {
+        self.socket.send(&data)
     }
 
-    pub fn send(&self, buffer: &[u8], send_address: &str) -> Result<usize, SocketError> {
-        let addr: SocketAddr = send_address
-            .parse()
-            .map_err(|e| SocketError::AddressParseError(std::io::Error::new(std::io::ErrorKind::InvalidInput, e)))?;
-        
-        self.socket.send_to(buffer, addr).map_err(SocketError::SendError)
+    pub fn receive(&self, buffer: &mut [u8]) -> Result<usize, std::io::Error> {
+        self.socket.set_nonblocking(true)?;
+        match self.socket.recv(buffer) {
+            Ok(size) => Ok(size),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(0),
+            Err(e) => Err(e)
+        }
     }
 
-    pub fn receive(&self, buffer: &mut [u8]) -> Result<(usize, SocketAddr), SocketError> {
-        self.socket
-            .recv_from(buffer)
-            .map_err(SocketError::ReceiveError)
-    }
-
-    pub fn get_local_port(&self) -> u16 {
-        self.bind_address.port()
+    pub fn get_address(&self) -> SocketAddr {
+        self.socket.local_addr().unwrap()
     }
 }
+
