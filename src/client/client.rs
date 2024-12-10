@@ -86,7 +86,7 @@ impl Client {
     }
 
     pub fn tick(&mut self) {
-        let _ = self.receive();
+        // let _ = self.receive();
         self.framer.tick();
     }
 
