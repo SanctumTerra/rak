@@ -1,6 +1,6 @@
 {
   "name": "@sanctumterra/rs-rak-client",
-  "version": "1.0.66",
+  "version": "1.0.67",
   "main": "index.js",
   "types": "index.d.ts",
   "napi": {

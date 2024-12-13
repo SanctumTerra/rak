@@ -141,7 +141,6 @@ impl Client {
             FrameSet::ID => {
                 let packet = FrameSet::deserialize(&binary).unwrap();
                 self.framer.on_frameset(&packet);
-                self.emit_event("frame_set", binary.to_vec());
             }
             Ack::ID => {
                 self.emit_event("ack", binary.to_vec());
@@ -153,7 +152,7 @@ impl Client {
                 let frame = self.framer.pls_frame(binary.to_vec());
                 self.framer.handle_packet(&frame);
             }
-            21 => {
+            21 => { 
                 self.connected.store(false, Ordering::SeqCst);
                 self.emit_event("disconnect", binary.to_vec());
             }
